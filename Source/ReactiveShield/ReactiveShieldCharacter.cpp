@@ -11,9 +11,16 @@
 #include "EnhancedInputSubsystems.h"
 #include "InputActionValue.h"
 #include "ReactiveShield.h"
+#include "ShieldTestProjectile.h"
+#include "Components/SphereComponent.h"
+#include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "InputCoreTypes.h"
+#include "TimerManager.h"
 
 AReactiveShieldCharacter::AReactiveShieldCharacter()
 {
+	ProjectileClass = AShieldTestProjectile::StaticClass();
 	// Set size for collision capsule
 	GetCapsuleComponent()->InitCapsuleSize(42.f, 96.0f);
 		
@@ -52,6 +59,10 @@ AReactiveShieldCharacter::AReactiveShieldCharacter()
 
 void AReactiveShieldCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
+	StopFiring();
+	// Key bindings coexist with the template's Enhanced Input movement/look actions.
+	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &AReactiveShieldCharacter::StartFiring);
+	PlayerInputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &AReactiveShieldCharacter::StopFiring);
 	// Set up action bindings
 	if (UEnhancedInputComponent* EnhancedInputComponent = Cast<UEnhancedInputComponent>(PlayerInputComponent)) {
 		
@@ -69,6 +80,92 @@ void AReactiveShieldCharacter::SetupPlayerInputComponent(UInputComponent* Player
 	else
 	{
 		UE_LOG(LogReactiveShield, Error, TEXT("'%s' Failed to find an Enhanced Input component! This template is built to use the Enhanced Input system. If you intend to use the legacy system, then you will need to update this C++ file."), *GetNameSafe(this));
+	}
+}
+
+void AReactiveShieldCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	StopFiring();
+	Super::EndPlay(EndPlayReason);
+}
+
+void AReactiveShieldCharacter::UnPossessed()
+{
+	StopFiring();
+	Super::UnPossessed();
+}
+
+void AReactiveShieldCharacter::StartFiring()
+{
+	if (!GetWorldTimerManager().IsTimerActive(FireTimerHandle))
+	{
+		FireProjectile();
+	}
+}
+
+void AReactiveShieldCharacter::StopFiring()
+{
+	GetWorldTimerManager().ClearTimer(FireTimerHandle);
+}
+
+void AReactiveShieldCharacter::FireProjectile()
+{
+	APlayerController* PlayerController = Cast<APlayerController>(Controller);
+	if (!InputEnabled() || !InputComponent || !PlayerController
+		|| !PlayerController->IsLocalController() || PlayerController->IsPaused()
+		|| !PlayerController->IsInputKeyDown(EKeys::LeftMouseButton) || !ProjectileClass
+		|| !FMath::IsFinite(FireRate) || FireRate <= 0.0f
+		|| !FMath::IsFinite(ProjectileSpeed) || ProjectileSpeed <= 0.0f || SpawnOffset.ContainsNaN())
+	{
+		StopFiring();
+		return;
+	}
+
+	const double Now = GetWorld()->GetTimeSeconds();
+	const float Interval = 1.0f / FMath::Clamp(FireRate, 0.1f, 20.0f);
+	if (Now < NextFireTime)
+	{
+		GetWorldTimerManager().SetTimer(FireTimerHandle, this,
+			&AReactiveShieldCharacter::FireProjectile, float(NextFireTime - Now), false);
+		return;
+	}
+	NextFireTime = Now + Interval;
+	// One-shot rearming prevents catch-up bursts after slow frames. Cooldown survives release.
+	GetWorldTimerManager().SetTimer(FireTimerHandle, this,
+		&AReactiveShieldCharacter::FireProjectile, Interval, false);
+
+	FVector ViewLocation;
+	FRotator ViewRotation;
+	PlayerController->GetPlayerViewPoint(ViewLocation, ViewRotation);
+	const FVector ViewDirection = ViewRotation.Vector();
+	const FVector TraceEnd = ViewLocation + ViewDirection * 100000.0f;
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(ProjectileAim), false, this);
+	FHitResult AimHit;
+	GetWorld()->LineTraceSingleByChannel(AimHit, ViewLocation, TraceEnd, ECC_Visibility, QueryParams);
+	const FVector AimPoint = AimHit.bBlockingHit ? AimHit.ImpactPoint : TraceEnd;
+	const FVector SpawnLocation = GetActorLocation() + GetActorRotation().RotateVector(SpawnOffset);
+
+	// Reject obstructed offsets rather than spawning through a nearby wall.
+	const USphereComponent* Collision = ProjectileClass.GetDefaultObject()->FindComponentByClass<USphereComponent>();
+	const float Radius = Collision ? FMath::Max(1.0f, Collision->GetScaledSphereRadius()) : 10.0f;
+	FHitResult SpawnHit;
+	if (GetWorld()->SweepSingleByChannel(SpawnHit, GetActorLocation(), SpawnLocation,
+		FQuat::Identity, ECC_Visibility, FCollisionShape::MakeSphere(Radius), QueryParams))
+	{
+		return;
+	}
+
+	const FVector AimDelta = AimPoint - SpawnLocation;
+	// A camera hit behind the muzzle must not send a projectile back through the player.
+	const FVector FireDirection = FVector::DotProduct(AimDelta, ViewDirection) > 0.0f
+		? AimDelta.GetSafeNormal() : ViewDirection;
+	const FTransform SpawnTransform(FireDirection.Rotation(), SpawnLocation);
+	AShieldTestProjectile* Projectile = GetWorld()->SpawnActorDeferred<AShieldTestProjectile>(
+		ProjectileClass, SpawnTransform, this, this, ESpawnActorCollisionHandlingMethod::DontSpawnIfColliding);
+	if (Projectile)
+	{
+		Projectile->ConfigureLaunch(ProjectileSpeed);
+		Projectile->FinishSpawning(SpawnTransform);
 	}
 }
 

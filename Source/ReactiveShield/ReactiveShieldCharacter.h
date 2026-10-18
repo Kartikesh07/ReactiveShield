@@ -10,6 +10,7 @@
 class USpringArmComponent;
 class UCameraComponent;
 class UInputAction;
+class AShieldTestProjectile;
 struct FInputActionValue;
 
 DECLARE_LOG_CATEGORY_EXTERN(LogTemplateCharacter, Log, All);
@@ -32,6 +33,29 @@ class AReactiveShieldCharacter : public ACharacter
 	UCameraComponent* FollowCamera;
 	
 protected:
+	/** Projectile fired by left mouse button. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Firing")
+	TSubclassOf<AShieldTestProjectile> ProjectileClass;
+
+	/** Shots per second, limited to 20 at runtime. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Firing", meta=(ClampMin="0.1", ClampMax="20.0"))
+	float FireRate = 5.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Firing", meta=(ClampMin="1.0", Units="cm/s"))
+	float ProjectileSpeed = 2000.0f;
+
+	/** Character-local offset in cm: forward, right, up. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Firing")
+	FVector SpawnOffset = FVector(100.0f, 35.0f, 50.0f);
+
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+	virtual void UnPossessed() override;
+
+	void StartFiring();
+	void StopFiring();
+	void FireProjectile();
+	FTimerHandle FireTimerHandle;
+	double NextFireTime = 0.0;
 
 	/** Jump Input Action */
 	UPROPERTY(EditAnywhere, Category="Input")

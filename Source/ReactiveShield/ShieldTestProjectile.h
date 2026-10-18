@@ -17,6 +17,13 @@ class REACTIVESHIELD_API AShieldTestProjectile : public AActor
 public:
 	AShieldTestProjectile();
 
+	/** Set before FinishSpawning so BeginPlay launches along the aimed rotation. */
+	void ConfigureLaunch(float InSpeed)
+	{
+		Speed = InSpeed;
+		LocalDirection = FVector::ForwardVector;
+	}
+
 protected:
 	virtual void BeginPlay() override;
 
