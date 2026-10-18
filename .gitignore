@@ -1,0 +1,36 @@
+# Unreal Engine generated folders
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+
+# IDE generated files
+.vs/
+.idea/
+.vscode/
+*.sln
+*.suo
+*.sdf
+*.opensdf
+*.VC.db
+*.VC.opendb
+*.VC.VC.opendb
+*.VC.db-shm
+*.VC.db-wal
+*.sln.docstates
+*.code-workspace
+
+# Compiled objects and debug symbols
+*.obj
+*.o
+*.pch
+*.pdb
+*.ipdb
+*.iobj
+*.ilk
+*.exp
+
+# Platform metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
