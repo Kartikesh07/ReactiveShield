@@ -8,6 +8,7 @@
 
 class UInputMappingContext;
 class UUserWidget;
+class UReactiveShieldHUDWidget;
 
 /**
  *  Basic PlayerController class for a third person game
@@ -19,6 +20,14 @@ class AReactiveShieldPlayerController : public APlayerController
 	GENERATED_BODY()
 	
 protected:
+	/** Optional tag identifying the shield monitored by the HUD. None selects the closest on acquisition. */
+	UPROPERTY(EditAnywhere, Category="Shield HUD")
+	FName HUDShieldActorTag;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UReactiveShieldHUDWidget> ShieldHUD;
+
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
 	/** Input Mapping Contexts */
 	UPROPERTY(EditAnywhere, Category ="Input|Input Mappings")

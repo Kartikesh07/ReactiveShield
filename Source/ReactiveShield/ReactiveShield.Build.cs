@@ -21,7 +21,7 @@ public class ReactiveShield : ModuleRules
 			"Slate"
 		});
 
-		PrivateDependencyModuleNames.AddRange(new string[] { "Niagara" });
+		PrivateDependencyModuleNames.AddRange(new string[] { "Niagara", "SlateCore" });
 
 		PublicIncludePaths.AddRange(new string[] {
 			"ReactiveShield",

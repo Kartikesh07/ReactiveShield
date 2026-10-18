@@ -35,6 +35,12 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Shield|Energy")
 	bool IsShieldActive() const { return bShieldActive; }
 
+	UFUNCTION(BlueprintPure, Category = "Shield|Energy")
+	float GetMaxEnergy() const { return MaxEnergy; }
+
+	UFUNCTION(BlueprintPure, Category = "Shield|Energy")
+	bool IsRegenerating() const { return bRegenerating; }
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;

@@ -7,11 +7,22 @@
 #include "InputMappingContext.h"
 #include "Blueprint/UserWidget.h"
 #include "ReactiveShield.h"
+#include "ReactiveShieldHUDWidget.h"
 #include "Widgets/Input/SVirtualJoystick.h"
 
 void AReactiveShieldPlayerController::BeginPlay()
 {
 	Super::BeginPlay();
+
+	if (IsLocalPlayerController() && !ShieldHUD)
+	{
+		ShieldHUD = CreateWidget<UReactiveShieldHUDWidget>(this, UReactiveShieldHUDWidget::StaticClass());
+		if (ShieldHUD)
+		{
+			ShieldHUD->ShieldActorTag = HUDShieldActorTag;
+			ShieldHUD->AddToPlayerScreen(1);
+		}
+	}
 
 	// only spawn touch controls on local player controllers
 	if (ShouldUseTouchControls() && IsLocalPlayerController())
@@ -31,6 +42,16 @@ void AReactiveShieldPlayerController::BeginPlay()
 		}
 
 	}
+}
+
+void AReactiveShieldPlayerController::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	if (ShieldHUD)
+	{
+		ShieldHUD->RemoveFromParent();
+		ShieldHUD = nullptr;
+	}
+	Super::EndPlay(EndPlayReason);
 }
 
 void AReactiveShieldPlayerController::SetupInputComponent()
