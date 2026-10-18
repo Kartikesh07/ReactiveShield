@@ -53,13 +53,25 @@ AReactiveShieldActor::AReactiveShieldActor()
 	ShieldMesh->SetGenerateOverlapEvents(false);
 	ShieldMesh->SetCanEverAffectNavigation(false);
 	ShieldMesh->SetCastShadow(false);
+	ShieldMesh->SetDefaultCustomPrimitiveDataFloat(0, 0.0f);
+
+	ReformationPulseMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("ReformationPulseMesh"));
+	ReformationPulseMesh->SetupAttachment(ShieldCollision);
+	ReformationPulseMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	ReformationPulseMesh->SetGenerateOverlapEvents(false);
+	ReformationPulseMesh->SetCanEverAffectNavigation(false);
+	ReformationPulseMesh->SetCastShadow(false);
+	ReformationPulseMesh->SetDefaultCustomPrimitiveDataFloat(0, 1.0f);
+	ReformationPulseMesh->SetVisibility(false);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> SphereMesh(TEXT("/Engine/BasicShapes/Sphere.Sphere"));
 	if (SphereMesh.Succeeded())
 	{
 		ShieldMesh->SetStaticMesh(SphereMesh.Object);
+		ReformationPulseMesh->SetStaticMesh(SphereMesh.Object);
 	}
 	ShieldMesh->SetRelativeScale3D(FVector(ShieldRadius / 50.0f));
+	ReformationPulseMesh->SetRelativeScale3D(FVector(ShieldRadius / 50.0f));
 
 	static ConstructorHelpers::FObjectFinder<UMaterialInterface> EnergyMaterial(
 		TEXT("/Game/Materials/M_ReactiveShield.M_ReactiveShield"));
@@ -79,10 +91,14 @@ void AReactiveShieldActor::OnConstruction(const FTransform& Transform)
 	ShieldCollision->SetSphereRadius(ShieldRadius);
 	// The engine's basic sphere has a radius of 50 cm.
 	ShieldMesh->SetRelativeScale3D(FVector(ShieldRadius / 50.0f));
+	const float PulseScale = VisualTransition == EVisualTransition::Reforming
+		? FMath::Lerp(0.05f, 1.3f, TransitionProgress) : 1.0f;
+	ReformationPulseMesh->SetRelativeScale3D(FVector(ShieldRadius / 50.0f * PulseScale));
 	if (HasActorBegunPlay() && ShieldDynamicMaterial && ShieldDynamicMaterial->Parent == ShieldMaterial)
 	{
 		// Moving the actor with simulation gizmos must not restart its current ripple.
 		ShieldMesh->SetMaterial(0, ShieldDynamicMaterial);
+		ReformationPulseMesh->SetMaterial(0, ShieldDynamicMaterial);
 		UpdateMaterialParameters();
 	}
 	else
@@ -98,6 +114,10 @@ void AReactiveShieldActor::BeginPlay()
 	CurrentEnergy = MaxEnergy;
 	bShieldActive = true;
 	bRegenerating = false;
+	VisualTransition = EVisualTransition::None;
+	ShieldVisualVisibility = 1.0f;
+	TransitionProgress = 1.0f;
+	TransitionElapsed = 0.0f;
 	ActiveCollisionMode = ShieldCollision->GetCollisionEnabled();
 	InitializeShieldMaterial();
 	SetActorTickEnabled(false);
@@ -126,8 +146,54 @@ void AReactiveShieldActor::SetShieldActive(bool bActive)
 	}
 	bShieldActive = bActive;
 	ShieldCollision->SetCollisionEnabled(bShieldActive ? ActiveCollisionMode : ECollisionEnabled::NoCollision);
+	StartVisualTransition(bShieldActive);
 	UE_LOG(LogReactiveShield, Log, TEXT("Shield %s %s: Energy=%.2f/%.2f"),
 		*GetName(), bShieldActive ? TEXT("reactivated") : TEXT("depleted"), CurrentEnergy, MaxEnergy);
+}
+
+void AReactiveShieldActor::StartVisualTransition(bool bReforming)
+{
+	// Interrupt rather than queue transitions; retain the currently displayed opacity.
+	TransitionStartVisibility = ShieldVisualVisibility;
+	VisualTransition = bReforming ? EVisualTransition::Reforming : EVisualTransition::Collapsing;
+	TransitionStartTime = GetWorld()->GetTimeSeconds();
+	TransitionElapsed = 0.0f;
+	TransitionProgress = 0.0f;
+	ShieldMesh->SetVisibility(true);
+	ReformationPulseMesh->SetVisibility(bReforming);
+	if (bReforming)
+	{
+		ReformationPulseMesh->SetRelativeScale3D(FVector(ShieldRadius / 50.0f * 0.05f));
+	}
+	UpdateMaterialParameters();
+	SetActorTickEnabled(true);
+}
+
+void AReactiveShieldActor::UpdateVisualTransition()
+{
+	if (VisualTransition == EVisualTransition::None)
+	{
+		return;
+	}
+	const bool bReforming = VisualTransition == EVisualTransition::Reforming;
+	TransitionElapsed = static_cast<float>(GetWorld()->GetTimeSeconds() - TransitionStartTime);
+	const float Duration = FMath::Max(0.01f, bReforming ? ReformationDuration : CollapseDuration);
+	TransitionProgress = FMath::Clamp(TransitionElapsed / Duration, 0.0f, 1.0f);
+	const float SmoothProgress = TransitionProgress * TransitionProgress * (3.0f - 2.0f * TransitionProgress);
+	ShieldVisualVisibility = FMath::Lerp(TransitionStartVisibility, bReforming ? 1.0f : 0.0f, SmoothProgress);
+	if (bReforming)
+	{
+		// Only this collision-free visual shell expands; the root collision sphere never scales.
+		ReformationPulseMesh->SetRelativeScale3D(FVector(ShieldRadius / 50.0f
+			* FMath::Lerp(0.05f, 1.3f, TransitionProgress)));
+	}
+	if (TransitionProgress >= 1.0f)
+	{
+		VisualTransition = EVisualTransition::None;
+		ShieldVisualVisibility = bShieldActive ? 1.0f : 0.0f;
+		ShieldMesh->SetVisibility(bShieldActive);
+		ReformationPulseMesh->SetVisibility(false);
+	}
 }
 
 void AReactiveShieldActor::ScheduleRegeneration()
@@ -167,12 +233,18 @@ void AReactiveShieldActor::InitializeShieldMaterial()
 		Ripple = FImpactRipple();
 	}
 	VisualEnergyNormalized = GetEnergyNormalized();
-	SetActorTickEnabled(bRegenerating);
+	SetActorTickEnabled(bRegenerating || VisualTransition != EVisualTransition::None);
 	ShieldMesh->SetMaterial(0, ShieldMaterial);
+	ReformationPulseMesh->SetMaterial(0, ShieldMaterial);
+	ShieldMesh->SetCustomPrimitiveDataFloat(0, 0.0f);
+	ReformationPulseMesh->SetCustomPrimitiveDataFloat(0, 1.0f);
+	ShieldMesh->SetVisibility(bShieldActive || VisualTransition != EVisualTransition::None);
+	ReformationPulseMesh->SetVisibility(VisualTransition == EVisualTransition::Reforming);
 	if (ShieldMaterial)
 	{
 		ShieldDynamicMaterial = UMaterialInstanceDynamic::Create(ShieldMaterial, this);
 		ShieldMesh->SetMaterial(0, ShieldDynamicMaterial);
+		ReformationPulseMesh->SetMaterial(0, ShieldDynamicMaterial);
 		UpdateMaterialParameters();
 		static_assert(UE_ARRAY_COUNT(RippleParameters) == MaxImpactRipples);
 		for (int32 Index = 0; Index < MaxImpactRipples; ++Index)
@@ -191,6 +263,14 @@ void AReactiveShieldActor::UpdateMaterialParameters()
 		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("GlowIntensity"), FMath::Max(0.0f, GlowIntensity));
 		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("EnergyNormalized"), VisualEnergyNormalized);
 		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleWidth"), FMath::Max(0.1f, RippleWidth));
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("ShieldVisibility"), ShieldVisualVisibility);
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("TransitionPhase"),
+			VisualTransition == EVisualTransition::Collapsing ? 1.0f : (VisualTransition == EVisualTransition::Reforming ? 2.0f : 0.0f));
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("TransitionProgress"), TransitionProgress);
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("TransitionElapsed"), TransitionElapsed);
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("CollapseIntensity"), FMath::Max(0.0f, CollapseIntensity));
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("ReformationIntensity"), FMath::Max(0.0f, ReformationIntensity));
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("CollapseFlickerIntensity"), FMath::Clamp(CollapseFlickerIntensity, 0.0f, 1.0f));
 	}
 }
 
@@ -260,6 +340,7 @@ void AReactiveShieldActor::Tick(float DeltaSeconds)
 	}
 
 	const float TargetEnergy = GetEnergyNormalized();
+	UpdateVisualTransition();
 	VisualEnergyNormalized = FMath::FInterpTo(VisualEnergyNormalized, TargetEnergy, DeltaSeconds, 8.0f);
 	if (FMath::IsNearlyEqual(VisualEnergyNormalized, TargetEnergy, 0.001f))
 	{
@@ -282,7 +363,7 @@ void AReactiveShieldActor::Tick(float DeltaSeconds)
 		bAnyActive |= Ripple.bActive;
 	}
 	const bool bEnergyVisualChanging = ShieldDynamicMaterial && VisualEnergyNormalized != TargetEnergy;
-	SetActorTickEnabled(bAnyActive || bRegenerating || bEnergyVisualChanging);
+	SetActorTickEnabled(bAnyActive || bRegenerating || bEnergyVisualChanging || VisualTransition != EVisualTransition::None);
 }
 
 void AReactiveShieldActor::HandleProjectileImpact(AShieldTestProjectile* Projectile, const FHitResult& Hit)

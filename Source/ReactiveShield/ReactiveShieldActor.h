@@ -90,6 +90,25 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Ripple", meta = (ClampMin = "0.01", Units = "s"))
 	float RippleDuration = 1.25f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Transitions", meta = (ClampMin = "0.01", Units = "s"))
+	float CollapseDuration = 0.5f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Transitions", meta = (ClampMin = "0.01", Units = "s"))
+	float ReformationDuration = 0.6f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Transitions", meta = (ClampMin = "0.0"))
+	float CollapseIntensity = 8.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Transitions", meta = (ClampMin = "0.0"))
+	float ReformationIntensity = 6.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Transitions", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+	float CollapseFlickerIntensity = 0.85f;
+
+	/** Visual shell only; shares the shield MID and never contributes collision. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Shield")
+	TObjectPtr<UStaticMeshComponent> ReformationPulseMesh;
+
 	UPROPERTY(EditAnywhere, Category = "Shield|Debug")
 	bool bDrawImpacts = true;
 
@@ -107,6 +126,16 @@ private:
 	void ScheduleRegeneration();
 	void BeginRegeneration();
 	void SetShieldActive(bool bActive);
+	void StartVisualTransition(bool bReforming);
+	void UpdateVisualTransition();
+
+	enum class EVisualTransition : uint8 { None, Collapsing, Reforming };
+	EVisualTransition VisualTransition = EVisualTransition::None;
+	double TransitionStartTime = 0.0;
+	float TransitionElapsed = 0.0f;
+	float TransitionProgress = 1.0f;
+	float TransitionStartVisibility = 1.0f;
+	float ShieldVisualVisibility = 1.0f;
 
 	FTimerHandle RegenerationTimerHandle;
 	double LastRegenerationUpdateTime = 0.0;
