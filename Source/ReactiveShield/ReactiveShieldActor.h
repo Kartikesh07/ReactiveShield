@@ -8,6 +8,7 @@
 class AShieldTestProjectile;
 class UMaterialInterface;
 class UMaterialInstanceDynamic;
+class UNiagaraSystem;
 class USphereComponent;
 class UStaticMeshComponent;
 
@@ -105,6 +106,30 @@ protected:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Transitions", meta = (ClampMin = "0.0", ClampMax = "1.0"))
 	float CollapseFlickerIntensity = 0.85f;
 
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Impact")
+	TObjectPtr<UNiagaraSystem> ImpactNiagaraSystem;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Impact", meta = (ClampMin = "0.0"))
+	float ImpactParticleIntensity = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Impact")
+	FLinearColor ImpactParticleColor = FLinearColor(0.0f, 0.8f, 1.0f, 1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Impact", meta = (ClampMin = "0.05", ClampMax = "5.0", Units = "s"))
+	float ImpactParticleLifetime = 0.35f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Collapse")
+	TObjectPtr<UNiagaraSystem> CollapseNiagaraSystem;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Collapse", meta = (ClampMin = "0.0"))
+	float CollapseParticleIntensity = 1.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Collapse")
+	FLinearColor CollapseParticleColor = FLinearColor(0.0f, 0.8f, 1.0f, 1.0f);
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Niagara|Collapse", meta = (ClampMin = "0.05", ClampMax = "5.0", Units = "s"))
+	float CollapseParticleLifetime = 0.8f;
+
 	/** Visual shell only; shares the shield MID and never contributes collision. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Shield")
 	TObjectPtr<UStaticMeshComponent> ReformationPulseMesh;
@@ -128,6 +153,8 @@ private:
 	void SetShieldActive(bool bActive);
 	void StartVisualTransition(bool bReforming);
 	void UpdateVisualTransition();
+	void SpawnNiagaraBurst(UNiagaraSystem* System, const FVector& Location, const FRotator& Rotation,
+		const FVector& Normal, const FLinearColor& Color, float Intensity, float Lifetime, int32 BaseCount);
 
 	enum class EVisualTransition : uint8 { None, Collapsing, Reforming };
 	EVisualTransition VisualTransition = EVisualTransition::None;

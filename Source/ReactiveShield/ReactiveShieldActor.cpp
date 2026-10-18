@@ -7,6 +7,9 @@
 #include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "NiagaraComponent.h"
+#include "NiagaraFunctionLibrary.h"
+#include "NiagaraSystem.h"
 #include "ReactiveShield.h"
 #include "ShieldTestProjectile.h"
 #include "TimerManager.h"
@@ -80,6 +83,18 @@ AReactiveShieldActor::AReactiveShieldActor()
 		ShieldMaterial = EnergyMaterial.Object;
 		ShieldMesh->SetMaterial(0, ShieldMaterial);
 	}
+	static ConstructorHelpers::FObjectFinder<UNiagaraSystem> ImpactSystem(
+		TEXT("/Game/VFX/NS_ShieldImpact.NS_ShieldImpact"));
+	if (ImpactSystem.Succeeded())
+	{
+		ImpactNiagaraSystem = ImpactSystem.Object;
+	}
+	static ConstructorHelpers::FObjectFinder<UNiagaraSystem> CollapseSystem(
+		TEXT("/Game/VFX/NS_ShieldCollapse.NS_ShieldCollapse"));
+	if (CollapseSystem.Succeeded())
+	{
+		CollapseNiagaraSystem = CollapseSystem.Object;
+	}
 }
 
 void AReactiveShieldActor::OnConstruction(const FTransform& Transform)
@@ -147,8 +162,48 @@ void AReactiveShieldActor::SetShieldActive(bool bActive)
 	bShieldActive = bActive;
 	ShieldCollision->SetCollisionEnabled(bShieldActive ? ActiveCollisionMode : ECollisionEnabled::NoCollision);
 	StartVisualTransition(bShieldActive);
+	if (!bShieldActive)
+	{
+		// This guarded state transition fires once per depletion, not once per frame.
+		SpawnNiagaraBurst(CollapseNiagaraSystem, ShieldCollision->GetComponentLocation(), FRotator::ZeroRotator,
+			FVector::UpVector, CollapseParticleColor, CollapseParticleIntensity, CollapseParticleLifetime, 80);
+	}
 	UE_LOG(LogReactiveShield, Log, TEXT("Shield %s %s: Energy=%.2f/%.2f"),
 		*GetName(), bShieldActive ? TEXT("reactivated") : TEXT("depleted"), CurrentEnergy, MaxEnergy);
+}
+
+void AReactiveShieldActor::SpawnNiagaraBurst(UNiagaraSystem* System, const FVector& Location, const FRotator& Rotation,
+	const FVector& Normal, const FLinearColor& Color, float Intensity, float Lifetime, int32 BaseCount)
+{
+	if (!System || Intensity <= 0.0f || GetNetMode() == NM_DedicatedServer)
+	{
+		return;
+	}
+	const float SafeLifetime = FMath::Clamp(Lifetime, 0.05f, 5.0f);
+	UNiagaraComponent* Effect = UNiagaraFunctionLibrary::SpawnSystemAtLocation(this, System, Location, Rotation,
+		FVector::OneVector, true, false, ENCPoolMethod::None, true);
+	if (!Effect)
+	{
+		return;
+	}
+
+	// Set overrides BEFORE activation so the time-zero burst uses this hit's values.
+	Effect->SetVariableVec3(TEXT("User.ImpactNormal"), Normal);
+	Effect->SetVariableLinearColor(TEXT("User.Color"),
+		FLinearColor(Color.R * Intensity * 8.0f, Color.G * Intensity * 8.0f, Color.B * Intensity * 8.0f, Color.A));
+	Effect->SetVariableFloat(TEXT("User.Lifetime"), SafeLifetime);
+	Effect->SetVariableInt(TEXT("User.BurstCount"), FMath::RoundToInt(FMath::Clamp(BaseCount * Intensity, 1.0f, 256.0f)));
+	const float WorldRadius = ShieldCollision->GetScaledSphereRadius();
+	Effect->SetVariableFloat(TEXT("User.ShieldRadius"), WorldRadius);
+	Effect->SetVariableFloat(TEXT("User.ShockwaveStartScale"), WorldRadius / 50.0f);
+	Effect->SetVariableFloat(TEXT("User.ShockwaveEndScale"), WorldRadius / 50.0f * 2.0f);
+	Effect->Activate(true);
+
+	// Finite emitters auto-destroy on completion. Bound even a user-assigned looping asset.
+	// No pooling: an old cleanup timer can never destroy a component reused by another hit.
+	FTimerHandle CleanupHandle;
+	GetWorldTimerManager().SetTimer(CleanupHandle, FTimerDelegate::CreateWeakLambda(Effect,
+		[Effect]() { Effect->DestroyComponent(); }), SafeLifetime + 0.25f, false);
 }
 
 void AReactiveShieldActor::StartVisualTransition(bool bReforming)
@@ -398,6 +453,8 @@ void AReactiveShieldActor::HandleProjectileImpact(AShieldTestProjectile* Project
 	else
 	{
 		StartImpactRipple(ImpactPoint);
+		SpawnNiagaraBurst(ImpactNiagaraSystem, ImpactPoint, FRotationMatrix::MakeFromZ(SurfaceNormal).Rotator(),
+			SurfaceNormal, ImpactParticleColor, ImpactParticleIntensity, ImpactParticleLifetime, 32);
 	}
 
 	if (bDrawImpacts)
