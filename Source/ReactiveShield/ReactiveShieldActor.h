@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Engine/TimerHandle.h"
 #include "GameFramework/Actor.h"
 #include "ReactiveShieldActor.generated.h"
 
@@ -24,8 +25,40 @@ public:
 	/** Hit must come from the projectile's blocking sweep against this shield. */
 	void HandleProjectileImpact(AShieldTestProjectile* Projectile, const FHitResult& Hit);
 
+	UFUNCTION(BlueprintPure, Category = "Shield|Energy")
+	float GetEnergyNormalized() const;
+
+	UFUNCTION(BlueprintPure, Category = "Shield|Energy")
+	float GetCurrentEnergy() const { return CurrentEnergy; }
+
+	UFUNCTION(BlueprintPure, Category = "Shield|Energy")
+	bool IsShieldActive() const { return bShieldActive; }
+
 protected:
 	virtual void BeginPlay() override;
+	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Energy", meta = (ClampMin = "1.0"))
+	float MaxEnergy = 100.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Energy", meta = (ClampMin = "0.0"))
+	float DamagePerHit = 20.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Energy", meta = (ClampMin = "0.0"))
+	float RegenerationRate = 15.0f;
+
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Shield|Energy", meta = (ClampMin = "0.0", Units = "s"))
+	float RegenerationDelay = 2.0f;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Shield|Energy")
+	float CurrentEnergy = 100.0f;
+
+	/** Energy state; depleted shields remain inactive until 25% energy is restored. */
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Shield|Energy")
+	bool bShieldActive = true;
+
+	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Transient, Category = "Shield|Energy")
+	bool bRegenerating = false;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Shield")
 	TObjectPtr<USphereComponent> ShieldCollision;
@@ -71,6 +104,14 @@ private:
 	void UpdateMaterialParameters();
 	void UpdateRippleMaterialParameters(int32 SlotIndex);
 	void StartImpactRipple(const FVector& WorldImpactPoint);
+	void ScheduleRegeneration();
+	void BeginRegeneration();
+	void SetShieldActive(bool bActive);
+
+	FTimerHandle RegenerationTimerHandle;
+	double LastRegenerationUpdateTime = 0.0;
+	float VisualEnergyNormalized = 1.0f;
+	ECollisionEnabled::Type ActiveCollisionMode = ECollisionEnabled::QueryOnly;
 
 	UPROPERTY(Transient, DuplicateTransient)
 	TObjectPtr<UMaterialInstanceDynamic> ShieldDynamicMaterial;

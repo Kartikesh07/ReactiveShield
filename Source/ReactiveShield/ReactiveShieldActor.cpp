@@ -4,10 +4,12 @@
 #include "Components/StaticMeshComponent.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/StaticMesh.h"
+#include "Engine/World.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "ReactiveShield.h"
 #include "ShieldTestProjectile.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
 namespace
@@ -71,6 +73,8 @@ AReactiveShieldActor::AReactiveShieldActor()
 void AReactiveShieldActor::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
+	MaxEnergy = FMath::Max(1.0f, MaxEnergy);
+	CurrentEnergy = HasActorBegunPlay() ? FMath::Clamp(CurrentEnergy, 0.0f, MaxEnergy) : MaxEnergy;
 	ShieldRadius = FMath::Max(1.0f, ShieldRadius);
 	ShieldCollision->SetSphereRadius(ShieldRadius);
 	// The engine's basic sphere has a radius of 50 cm.
@@ -90,11 +94,67 @@ void AReactiveShieldActor::OnConstruction(const FTransform& Transform)
 void AReactiveShieldActor::BeginPlay()
 {
 	Super::BeginPlay();
+	MaxEnergy = FMath::Max(1.0f, MaxEnergy);
+	CurrentEnergy = MaxEnergy;
+	bShieldActive = true;
+	bRegenerating = false;
+	ActiveCollisionMode = ShieldCollision->GetCollisionEnabled();
 	InitializeShieldMaterial();
 	SetActorTickEnabled(false);
 	if (!ShieldDynamicMaterial)
 	{
 		UE_LOG(LogReactiveShield, Warning, TEXT("Shield %s needs M_ReactiveShield assigned to ShieldMaterial for energy ripples."), *GetName());
+	}
+}
+
+void AReactiveShieldActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+	GetWorldTimerManager().ClearTimer(RegenerationTimerHandle);
+	Super::EndPlay(EndPlayReason);
+}
+
+float AReactiveShieldActor::GetEnergyNormalized() const
+{
+	return FMath::Clamp(CurrentEnergy / FMath::Max(1.0f, MaxEnergy), 0.0f, 1.0f);
+}
+
+void AReactiveShieldActor::SetShieldActive(bool bActive)
+{
+	if (bShieldActive == bActive)
+	{
+		return;
+	}
+	bShieldActive = bActive;
+	ShieldCollision->SetCollisionEnabled(bShieldActive ? ActiveCollisionMode : ECollisionEnabled::NoCollision);
+	UE_LOG(LogReactiveShield, Log, TEXT("Shield %s %s: Energy=%.2f/%.2f"),
+		*GetName(), bShieldActive ? TEXT("reactivated") : TEXT("depleted"), CurrentEnergy, MaxEnergy);
+}
+
+void AReactiveShieldActor::ScheduleRegeneration()
+{
+	GetWorldTimerManager().ClearTimer(RegenerationTimerHandle);
+	bRegenerating = false;
+	if (CurrentEnergy < MaxEnergy && RegenerationRate > 0.0f)
+	{
+		if (RegenerationDelay > 0.0f)
+		{
+			GetWorldTimerManager().SetTimer(RegenerationTimerHandle, this,
+				&AReactiveShieldActor::BeginRegeneration, RegenerationDelay, false);
+		}
+		else
+		{
+			BeginRegeneration();
+		}
+	}
+}
+
+void AReactiveShieldActor::BeginRegeneration()
+{
+	if (CurrentEnergy < MaxEnergy && RegenerationRate > 0.0f)
+	{
+		bRegenerating = true;
+		LastRegenerationUpdateTime = GetWorld()->GetTimeSeconds();
+		SetActorTickEnabled(true);
 	}
 }
 
@@ -106,7 +166,8 @@ void AReactiveShieldActor::InitializeShieldMaterial()
 	{
 		Ripple = FImpactRipple();
 	}
-	SetActorTickEnabled(false);
+	VisualEnergyNormalized = GetEnergyNormalized();
+	SetActorTickEnabled(bRegenerating);
 	ShieldMesh->SetMaterial(0, ShieldMaterial);
 	if (ShieldMaterial)
 	{
@@ -128,12 +189,17 @@ void AReactiveShieldActor::UpdateMaterialParameters()
 		ShieldDynamicMaterial->SetVectorParameterValue(TEXT("ShieldColor"), ShieldColor);
 		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("ShieldRadius"), ShieldRadius);
 		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("GlowIntensity"), FMath::Max(0.0f, GlowIntensity));
+		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("EnergyNormalized"), VisualEnergyNormalized);
 		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleWidth"), FMath::Max(0.1f, RippleWidth));
 	}
 }
 
 void AReactiveShieldActor::UpdateRippleMaterialParameters(int32 SlotIndex)
 {
+	if (!ShieldDynamicMaterial)
+	{
+		return;
+	}
 	const FImpactRipple& Ripple = RippleSlots[SlotIndex];
 	const FRippleMaterialParameters& Parameters = RippleParameters[SlotIndex];
 	ShieldDynamicMaterial->SetVectorParameterValue(Parameters.Position,
@@ -179,12 +245,26 @@ void AReactiveShieldActor::StartImpactRipple(const FVector& WorldImpactPoint)
 void AReactiveShieldActor::Tick(float DeltaSeconds)
 {
 	Super::Tick(DeltaSeconds);
-	if (!ShieldDynamicMaterial)
+	if (bRegenerating)
 	{
-		SetActorTickEnabled(false);
-		return;
+		const double Now = GetWorld()->GetTimeSeconds();
+		// Do not credit time spent waiting for the regeneration timer on its first frame.
+		const float RegenerationDelta = static_cast<float>(FMath::Max(0.0, Now - LastRegenerationUpdateTime));
+		LastRegenerationUpdateTime = Now;
+		CurrentEnergy = FMath::Min(MaxEnergy, CurrentEnergy + FMath::Max(0.0f, RegenerationRate) * RegenerationDelta);
+		if (!bShieldActive && CurrentEnergy >= MaxEnergy * 0.25f)
+		{
+			SetShieldActive(true);
+		}
+		bRegenerating = CurrentEnergy < MaxEnergy && RegenerationRate > 0.0f;
 	}
 
+	const float TargetEnergy = GetEnergyNormalized();
+	VisualEnergyNormalized = FMath::FInterpTo(VisualEnergyNormalized, TargetEnergy, DeltaSeconds, 8.0f);
+	if (FMath::IsNearlyEqual(VisualEnergyNormalized, TargetEnergy, 0.001f))
+	{
+		VisualEnergyNormalized = TargetEnergy;
+	}
 	UpdateMaterialParameters();
 	bool bAnyActive = false;
 	for (int32 Index = 0; Index < MaxImpactRipples; ++Index)
@@ -201,18 +281,26 @@ void AReactiveShieldActor::Tick(float DeltaSeconds)
 		UpdateRippleMaterialParameters(Index);
 		bAnyActive |= Ripple.bActive;
 	}
-	if (!bAnyActive)
-	{
-		SetActorTickEnabled(false);
-	}
+	const bool bEnergyVisualChanging = ShieldDynamicMaterial && VisualEnergyNormalized != TargetEnergy;
+	SetActorTickEnabled(bAnyActive || bRegenerating || bEnergyVisualChanging);
 }
 
 void AReactiveShieldActor::HandleProjectileImpact(AShieldTestProjectile* Projectile, const FHitResult& Hit)
 {
-	if (!IsValid(Projectile) || !Hit.bBlockingHit || Hit.GetComponent() != ShieldCollision.Get())
+	if (!bShieldActive || !IsValid(Projectile) || !Hit.bBlockingHit || Hit.GetComponent() != ShieldCollision.Get())
 	{
 		return;
 	}
+
+	CurrentEnergy = FMath::Clamp(CurrentEnergy - FMath::Max(0.0f, DamagePerHit), 0.0f, MaxEnergy);
+	if (CurrentEnergy <= 0.0f)
+	{
+		SetShieldActive(false);
+	}
+	ScheduleRegeneration();
+	// Energy still regenerates when the visual material is unavailable.
+	SetActorTickEnabled(true);
+	UE_LOG(LogReactiveShield, Log, TEXT("Shield %s impact energy: %.2f/%.2f"), *GetName(), CurrentEnergy, MaxEnergy);
 
 	// ImpactPoint is the surface contact; Location is the swept projectile's center.
 	const FVector ImpactPoint = Hit.ImpactPoint;
