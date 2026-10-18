@@ -10,6 +10,26 @@
 #include "ShieldTestProjectile.h"
 #include "UObject/ConstructorHelpers.h"
 
+namespace
+{
+	struct FRippleMaterialParameters
+	{
+		FName Position;
+		FName Radius;
+		FName Progress;
+		FName Active;
+	};
+
+	// Slot zero retains the original parameter names and single-impact appearance.
+	const FRippleMaterialParameters RippleParameters[] =
+	{
+		{TEXT("ImpactPositionLocal"), TEXT("RippleRadius"), TEXT("RippleProgress"), TEXT("RippleActive")},
+		{TEXT("ImpactPositionLocal1"), TEXT("RippleRadius1"), TEXT("RippleProgress1"), TEXT("RippleActive1")},
+		{TEXT("ImpactPositionLocal2"), TEXT("RippleRadius2"), TEXT("RippleProgress2"), TEXT("RippleActive2")},
+		{TEXT("ImpactPositionLocal3"), TEXT("RippleRadius3"), TEXT("RippleProgress3"), TEXT("RippleActive3")}
+	};
+}
+
 AReactiveShieldActor::AReactiveShieldActor()
 {
 	PrimaryActorTick.bCanEverTick = true;
@@ -81,16 +101,23 @@ void AReactiveShieldActor::BeginPlay()
 void AReactiveShieldActor::InitializeShieldMaterial()
 {
 	ShieldDynamicMaterial = nullptr;
-	RippleElapsed = 0.0f;
+	NextImpactOrder = 0;
+	for (FImpactRipple& Ripple : RippleSlots)
+	{
+		Ripple = FImpactRipple();
+	}
+	SetActorTickEnabled(false);
 	ShieldMesh->SetMaterial(0, ShieldMaterial);
 	if (ShieldMaterial)
 	{
 		ShieldDynamicMaterial = UMaterialInstanceDynamic::Create(ShieldMaterial, this);
 		ShieldMesh->SetMaterial(0, ShieldDynamicMaterial);
 		UpdateMaterialParameters();
-		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleActive"), 0.0f);
-		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleProgress"), 0.0f);
-		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleRadius"), 0.0f);
+		static_assert(UE_ARRAY_COUNT(RippleParameters) == MaxImpactRipples);
+		for (int32 Index = 0; Index < MaxImpactRipples; ++Index)
+		{
+			UpdateRippleMaterialParameters(Index);
+		}
 	}
 }
 
@@ -105,6 +132,17 @@ void AReactiveShieldActor::UpdateMaterialParameters()
 	}
 }
 
+void AReactiveShieldActor::UpdateRippleMaterialParameters(int32 SlotIndex)
+{
+	const FImpactRipple& Ripple = RippleSlots[SlotIndex];
+	const FRippleMaterialParameters& Parameters = RippleParameters[SlotIndex];
+	ShieldDynamicMaterial->SetVectorParameterValue(Parameters.Position,
+		FLinearColor(Ripple.LocalImpact.X, Ripple.LocalImpact.Y, Ripple.LocalImpact.Z, 0.0f));
+	ShieldDynamicMaterial->SetScalarParameterValue(Parameters.Radius, Ripple.Radius);
+	ShieldDynamicMaterial->SetScalarParameterValue(Parameters.Progress, Ripple.Progress);
+	ShieldDynamicMaterial->SetScalarParameterValue(Parameters.Active, Ripple.bActive ? 1.0f : 0.0f);
+}
+
 void AReactiveShieldActor::StartImpactRipple(const FVector& WorldImpactPoint)
 {
 	if (!ShieldDynamicMaterial)
@@ -112,16 +150,29 @@ void AReactiveShieldActor::StartImpactRipple(const FVector& WorldImpactPoint)
 		return;
 	}
 
+	int32 SlotIndex = 0;
+	for (int32 Index = 0; Index < MaxImpactRipples; ++Index)
+	{
+		if (!RippleSlots[Index].bActive)
+		{
+			SlotIndex = Index;
+			break;
+		}
+		if (RippleSlots[Index].ImpactOrder < RippleSlots[SlotIndex].ImpactOrder)
+		{
+			SlotIndex = Index;
+		}
+	}
+
+	FImpactRipple& Ripple = RippleSlots[SlotIndex];
+	Ripple = FImpactRipple();
 	// Match the material's Absolute World -> Local transform, including mesh radius scale.
-	// A new hit replaces the previous ripple; no world-space position is retained.
-	const FVector LocalImpact = ShieldMesh->GetComponentTransform().InverseTransformPosition(WorldImpactPoint);
-	ShieldDynamicMaterial->SetVectorParameterValue(TEXT("ImpactPositionLocal"),
-		FLinearColor(LocalImpact.X, LocalImpact.Y, LocalImpact.Z, 0.0f));
-	RippleElapsed = 0.0f;
+	Ripple.LocalImpact = ShieldMesh->GetComponentTransform().InverseTransformPosition(WorldImpactPoint);
+	// Sequence order also distinguishes hits received in the same frame.
+	Ripple.ImpactOrder = NextImpactOrder++;
+	Ripple.bActive = true;
 	UpdateMaterialParameters();
-	ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleRadius"), 0.0f);
-	ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleProgress"), 0.0f);
-	ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleActive"), 1.0f);
+	UpdateRippleMaterialParameters(SlotIndex);
 	SetActorTickEnabled(true);
 }
 
@@ -134,14 +185,24 @@ void AReactiveShieldActor::Tick(float DeltaSeconds)
 		return;
 	}
 
-	RippleElapsed += DeltaSeconds;
-	const float Progress = FMath::Clamp(RippleElapsed / FMath::Max(0.01f, RippleDuration), 0.0f, 1.0f);
 	UpdateMaterialParameters();
-	ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleRadius"), FMath::Max(0.0f, RippleSpeed) * RippleElapsed);
-	ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleProgress"), Progress);
-	if (Progress >= 1.0f)
+	bool bAnyActive = false;
+	for (int32 Index = 0; Index < MaxImpactRipples; ++Index)
 	{
-		ShieldDynamicMaterial->SetScalarParameterValue(TEXT("RippleActive"), 0.0f);
+		FImpactRipple& Ripple = RippleSlots[Index];
+		if (!Ripple.bActive)
+		{
+			continue;
+		}
+		Ripple.Elapsed += DeltaSeconds;
+		Ripple.Radius = FMath::Max(0.0f, RippleSpeed) * Ripple.Elapsed;
+		Ripple.Progress = FMath::Clamp(Ripple.Elapsed / FMath::Max(0.01f, RippleDuration), 0.0f, 1.0f);
+		Ripple.bActive = Ripple.Progress < 1.0f;
+		UpdateRippleMaterialParameters(Index);
+		bAnyActive |= Ripple.bActive;
+	}
+	if (!bAnyActive)
+	{
 		SetActorTickEnabled(false);
 	}
 }

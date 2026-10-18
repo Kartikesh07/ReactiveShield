@@ -69,10 +69,24 @@ protected:
 private:
 	void InitializeShieldMaterial();
 	void UpdateMaterialParameters();
+	void UpdateRippleMaterialParameters(int32 SlotIndex);
 	void StartImpactRipple(const FVector& WorldImpactPoint);
 
 	UPROPERTY(Transient, DuplicateTransient)
 	TObjectPtr<UMaterialInstanceDynamic> ShieldDynamicMaterial;
 
-	float RippleElapsed = 0.0f;
+	static constexpr int32 MaxImpactRipples = 4;
+
+	struct FImpactRipple
+	{
+		FVector LocalImpact = FVector::ZeroVector;
+		float Elapsed = 0.0f;
+		float Radius = 0.0f;
+		float Progress = 0.0f;
+		uint64 ImpactOrder = 0;
+		bool bActive = false;
+	};
+
+	FImpactRipple RippleSlots[MaxImpactRipples];
+	uint64 NextImpactOrder = 0;
 };
